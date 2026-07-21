@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .auth.csrf import CSRFMiddleware
 from .core.config import settings
 from .core.logging import configure_logging
 from .core.rate_limit import limiter
@@ -36,6 +37,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "PATCH"],
     allow_headers=["*", "X-CSRF-Token"],
 )
+app.add_middleware(CSRFMiddleware)
 
 app.state.limiter = limiter
 
