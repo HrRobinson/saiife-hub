@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
+from urllib.parse import urlencode
 
+from authlib.common.security import generate_token
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from itsdangerous import BadSignature, URLSafeSerializer
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +19,13 @@ from ....auth import audit, password
 from ....auth import jwt as ajwt
 from ....auth.cookies import REFRESH_COOKIE, clear_session_cookies, set_session_cookies
 from ....auth.deps import current_user
+from ....auth.oauth_google import (
+    GOOGLE_AUTH_URL,
+    build_client,
+    classify_match,
+    exchange_code,
+    fetch_userinfo,
+)
 from ....auth.schemas import (
     LoginRequest,
     ResendVerificationRequest,
@@ -26,7 +37,7 @@ from ....core.config import settings
 from ....core.rate_limit import limiter
 from ....db.session import get_db
 from ....mailer import get_mailer
-from ....models.user import EmailVerification, Session, User
+from ....models.user import EmailVerification, OAuthAccount, Session, User
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -285,3 +296,136 @@ async def logout(
 @router.get("/me", response_model=UserOut)
 async def me(user: User = Depends(current_user)) -> UserOut:
     return _user_out(user)
+
+
+_state_serializer = URLSafeSerializer(settings.APP_JWT_SECRET, salt="oauth-state")
+
+
+async def _google_exchange_and_userinfo(code: str, code_verifier: str) -> dict[str, Any]:
+    client = build_client()
+    token = await exchange_code(client, code, code_verifier)
+    return await fetch_userinfo(client, token["access_token"])
+
+
+@router.get("/google/start")
+async def google_start() -> Response:
+    code_verifier = generate_token(64)
+    code_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+        .decode()
+        .rstrip("=")
+    )
+    state = secrets.token_urlsafe(24)
+    cookie_value = _state_serializer.dumps({"state": state, "verifier": code_verifier})
+
+    params = {
+        "client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
+        "redirect_uri": settings.GOOGLE_OAUTH_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "access_type": "online",
+        "prompt": "select_account",
+    }
+    response = Response(
+        status_code=302, headers={"location": f"{GOOGLE_AUTH_URL}?{urlencode(params)}"}
+    )
+    response.set_cookie(
+        "oauth_state",
+        cookie_value,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite="lax",
+        max_age=600,
+        domain=settings.COOKIE_DOMAIN,
+        path="/",
+    )
+    return response
+
+
+@router.get("/google/callback")
+async def google_callback(
+    request: Request, code: str, state: str, db: AsyncSession = Depends(get_db)
+) -> Response:
+    raw_state_cookie = request.cookies.get("oauth_state")
+    if not raw_state_cookie:
+        raise _err("oauth_state_mismatch", "OAuth state missing or expired.", 400)
+    try:
+        state_data = _state_serializer.loads(raw_state_cookie)
+    except BadSignature:
+        raise _err("oauth_state_mismatch", "OAuth state signature invalid.", 400) from None
+    if state_data.get("state") != state:
+        raise _err("oauth_state_mismatch", "OAuth state mismatch.", 400)
+
+    userinfo = await _google_exchange_and_userinfo(code, state_data["verifier"])
+    google_sub = userinfo["sub"]
+    google_email = str(userinfo["email"]).lower()
+    google_email_verified = bool(userinfo.get("email_verified"))
+
+    existing_oauth = await db.scalar(
+        select(OAuthAccount).where(
+            OAuthAccount.provider == "google", OAuthAccount.provider_sub == google_sub
+        )
+    )
+    existing_user = await db.scalar(select(User).where(User.email == google_email))
+    decision = classify_match(
+        google_sub=google_sub,
+        google_email=google_email,
+        google_email_verified=google_email_verified,
+        existing_oauth=existing_oauth,
+        existing_user_by_email=existing_user,
+    )
+
+    if decision.action == "reject_google_unverified":
+        raise _err("oauth_email_unverified", "Your Google account email is not verified.", 400)
+    if decision.action == "reject_unverified_conflict":
+        raise _err(
+            "oauth_email_unverified_conflict",
+            "An unverified account already uses this email — finish email verification first.",
+            409,
+        )
+
+    if decision.action == "create_new":
+        user = User(
+            id=uuid.uuid4(),
+            email=google_email,
+            password_hash=None,
+            email_verified_at=datetime.now(timezone.utc),
+        )
+        db.add(user)
+        await db.flush()
+        db.add(
+            OAuthAccount(
+                id=uuid.uuid4(), user_id=user.id, provider="google",
+                provider_sub=google_sub, email=google_email,
+            )
+        )
+        await audit.log_event(
+            db, user_id=user.id, event_type="signup", request=request, metadata={"via": "google"}
+        )
+    elif decision.action == "link_and_log_in":
+        assert existing_user is not None  # classify_match guarantees this
+        user = existing_user
+        db.add(
+            OAuthAccount(
+                id=uuid.uuid4(), user_id=user.id, provider="google",
+                provider_sub=google_sub, email=google_email,
+            )
+        )
+        await audit.log_event(db, user_id=user.id, event_type="google_linked", request=request)
+    else:  # log_in_existing
+        assert decision.user_id is not None  # classify_match guarantees this
+        found = await db.scalar(select(User).where(User.id == decision.user_id))
+        assert found is not None  # OAuthAccount.user_id FK guarantees the row exists
+        user = found
+
+    response = Response(
+        status_code=303, headers={"location": f"{settings.APP_URL}/oauth-callback"}
+    )
+    response.delete_cookie("oauth_state", domain=settings.COOKIE_DOMAIN, path="/")
+    await _start_session(db, user, request, response)
+    await audit.log_event(db, user_id=user.id, event_type="login_google", request=request)
+    await db.commit()
+    return response
