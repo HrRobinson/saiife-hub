@@ -21,3 +21,22 @@ os.environ.setdefault("STRIPE_SECRET_KEY", "sk_test_not_a_real_key")
 os.environ.setdefault("STRIPE_PRICE_ID", "price_test_not_a_real_price")
 os.environ.setdefault("COOKIE_DOMAIN", ".saiife.localhost")
 os.environ.setdefault("COOKIE_SECURE", "true")
+
+import pytest_asyncio
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def db_ready() -> object:
+    """Create a pristine schema before every test, fully offline (sqlite).
+
+    Dropping and recreating rather than truncating keeps each test hermetic and
+    avoids maintaining a TRUNCATE list as tables are added.
+    """
+    from app import models  # noqa: F401  -- registers every table on Base.metadata
+    from app.db.base import Base
+    from app.db.session import engine
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield
