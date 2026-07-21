@@ -93,7 +93,24 @@ def test_verify_rejects_a_hash_of_the_wrong_length() -> None:
     assert tokens.verify_account_secret("s3cret", "pep", short) is False
 
 
-def test_equalize_timing_does_real_scrypt_work_and_returns_none() -> None:
+def test_equalize_timing_does_real_scrypt_work_and_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The unknown-lookup-id path must still burn a scrypt so it is not a timing
-    oracle for 'does this tenant exist'."""
+    oracle for 'does this tenant exist'.
+
+    Regression guard: a stub `equalize_timing` that just `return`s None without
+    doing any scrypt work would previously satisfy this test's only assertion
+    (the return value). Spying on hashlib.scrypt makes that regression fail.
+    """
+    real_scrypt = hashlib.scrypt
+    calls: list[tuple[bytes, bytes]] = []
+
+    def spy_scrypt(password: bytes, *, salt: bytes, **kwargs: object) -> bytes:
+        calls.append((password, salt))
+        return real_scrypt(password, salt=salt, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(hashlib, "scrypt", spy_scrypt)
+
     assert tokens.equalize_timing("s3cret", "pep") is None
+    assert calls == [(b"pep:s3cret", tokens.DUMMY_SALT)]
