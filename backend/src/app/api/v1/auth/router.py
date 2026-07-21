@@ -4,7 +4,7 @@ import hashlib
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
@@ -189,6 +189,70 @@ async def login(
         user.password_hash = password.hash_password(body.password)
     await _start_session(db, user, request, response)
     await audit.log_event(db, user_id=user.id, event_type="login_password", request=request)
+    await db.commit()
+    return _user_out(user)
+
+
+@router.post("/refresh", response_model=UserOut)
+async def refresh(
+    request: Request, response: Response, db: AsyncSession = Depends(get_db)
+) -> UserOut:
+    from sqlalchemy import update
+
+    cookie = request.cookies.get(REFRESH_COOKIE)
+    if not cookie:
+        raise _err("no_refresh", "No refresh token.", 401)
+    try:
+        claims = ajwt.verify_refresh(cookie)
+    except ajwt.InvalidToken:
+        raise _err("token_expired", "Refresh token expired.", 401) from None
+
+    session = await db.scalar(select(Session).where(Session.refresh_jti == claims.jti))
+    if session is None or session.revoked_at is not None or session.rotated_to is not None:
+        # Replay detection — revoke EVERY live session for this user. Only log
+        # the lockdown event if this call actually revoked a still-live
+        # session: once lockdown has already run, later replays of any dead
+        # token in the chain hit this same branch and must not re-log.
+        from sqlalchemy.engine import CursorResult
+
+        result = cast(
+            "CursorResult[Any]",
+            await db.execute(
+                update(Session)
+                .where(Session.user_id == claims.sub, Session.revoked_at.is_(None))
+                .values(revoked_at=datetime.now(timezone.utc))
+            ),
+        )
+        if result.rowcount > 0:
+            await audit.log_event(
+                db, user_id=claims.sub, event_type="refresh_replay_lockdown", request=request
+            )
+        await db.commit()
+        clear_session_cookies(response)
+        raise _err("token_revoked", "Session revoked.", 401)
+
+    user = await db.scalar(select(User).where(User.id == claims.sub))
+    if user is None:
+        raise _err("token_revoked", "Account not found.", 401)
+
+    new_session = Session(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        refresh_jti="",
+        user_agent=request.headers.get("user-agent"),
+        ip=request.client.host if request.client else None,
+    )
+    db.add(new_session)
+    await db.flush()
+    new_refresh, new_jti = ajwt.issue_refresh(user.id, new_session.id)
+    new_session.refresh_jti = new_jti
+    session.rotated_to = new_session.id
+    session.revoked_at = datetime.now(timezone.utc)
+
+    access = ajwt.issue_access(user.id, user.email)
+    csrf = secrets.token_urlsafe(32)
+    set_session_cookies(response, access=access, refresh=new_refresh, csrf=csrf)
+    await audit.log_event(db, user_id=user.id, event_type="refresh", request=request)
     await db.commit()
     return _user_out(user)
 
