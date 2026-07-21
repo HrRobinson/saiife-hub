@@ -1,0 +1,310 @@
+@import "tailwindcss";
+@import "@saiife/ui/tokens.css";
+
+/* Tailwind v4 only auto-scans this app's own source; the @saiife/ui package
+   lives outside it, so utilities used *only* inside its components (the
+   shadcn sidebar's sr-only / bg-sidebar / group-data / width classes, etc.)
+   were never emitted and the sidebar rendered unstyled. Scan the package
+   source explicitly so those classes are generated. */
+@source "../../../packages/ui/src";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: var(--font-sans-src, system-ui, sans-serif);
+  --font-mono: var(--font-mono-src, ui-monospace, monospace);
+  --font-display: var(--font-display, Georgia, serif);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-warning: var(--warning);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+html, body { height: 100%; }
+/* Atmosphere pseudo-elements (.ambient-bed::before, etc.) bleed past the
+   viewport edges; clip horizontally so a theme switch / reflow can't flash
+   stray bottom + side scrollbars. */
+body { overflow-x: hidden; }
+
+/* The app doesn't import shadcn/tailwind.css (the frontend does), so it was
+   missing the standard default-border-color reset. Without it, any utility
+   that sets only border *width* (e.g. the shadcn sidebar's `border-r`) falls
+   back to `currentColor` and paints as the light text colour — that's the
+   stray white sidebar line. Restore the intended token default. */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+}
+
+/*
+ * "Operations console / intelligence briefing" atmosphere.
+ * Near-black canvas with a faint engineering grid, a vignette, and a
+ * static grain overlay so surfaces have depth instead of flat fills.
+ */
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(to right, color-mix(in oklch, var(--border) 45%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklch, var(--border) 45%, transparent) 1px, transparent 1px),
+    radial-gradient(ellipse at 50% 0%, transparent 55%, color-mix(in oklch, var(--background) 78%, transparent) 100%);
+  background-size: 64px 64px, 64px 64px, 100% 100%;
+  mask-image: radial-gradient(ellipse at 50% 30%, black 30%, transparent 85%);
+  opacity: 0.55;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+body > * { position: relative; z-index: 1; }
+
+/* ---- Design-language utilities ---- */
+
+.briefing-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.briefing-label::before {
+  content: "";
+  width: 14px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.6;
+}
+
+.display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  line-height: 1.05;
+}
+
+.stamp {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+.frame {
+  border: 1px solid var(--border);
+  background:
+    linear-gradient(180deg,
+      color-mix(in oklch, var(--card) 100%, transparent),
+      color-mix(in oklch, var(--background) 60%, var(--card)));
+}
+
+.ticks { position: relative; }
+.ticks::before, .ticks::after {
+  content: "";
+  position: absolute;
+  width: 7px; height: 7px;
+  border-color: color-mix(in oklch, var(--muted-foreground) 50%, transparent);
+}
+.ticks::before { top: -1px; left: -1px; border-top: 1px solid; border-left: 1px solid; }
+.ticks::after  { bottom: -1px; right: -1px; border-bottom: 1px solid; border-right: 1px solid; }
+
+@keyframes briefing-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.briefing-in { animation: briefing-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* ---- Radar scope life ---- */
+@keyframes radar-ping {
+  0%   { transform: scale(0.26); opacity: 0.55; }
+  70%  { opacity: 0.1; }
+  100% { transform: scale(1); opacity: 0; }
+}
+.radar-ping {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1px solid color-mix(in oklch, var(--primary) 45%, transparent);
+  animation: radar-ping 3.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+/* Phosphor blip: bright the instant the beam crosses, then long decay.
+   Synced to the sweep via a per-contact negative animation-delay. */
+@keyframes radar-contact {
+  0%   { opacity: 1; transform: scale(1.7);
+         box-shadow: 0 0 9px 2px color-mix(in oklch, var(--primary) 70%, transparent); }
+  6%   { opacity: 0.95; }
+  35%  { opacity: 0.28; box-shadow: 0 0 0 0 transparent; }
+  100% { opacity: 0; transform: scale(0.7); box-shadow: none; }
+}
+.radar-contact { animation: radar-contact 3.4s linear infinite; }
+
+/* Own rotation keyframe — do NOT rely on Tailwind's `spin` (only emitted
+   when an animate-spin utility is present somewhere). */
+@keyframes radar-spin { to { transform: rotate(360deg); } }
+.radar-spin { animation: radar-spin 3.4s linear infinite; transform-origin: 50% 50%; }
+@media (prefers-reduced-motion: reduce) { .radar-spin { animation: none; } }
+
+@keyframes crt-flicker {
+  0%, 100% { opacity: 0.55; }
+  47%      { opacity: 0.5; }
+  48%      { opacity: 0.82; }
+  49%      { opacity: 0.48; }
+  50%      { opacity: 0.7; }
+}
+.crt-flicker { animation: crt-flicker 4.5s steps(1, end) infinite; }
+
+@keyframes lock-pop {
+  0%   { opacity: 0; transform: scale(0.6); }
+  60%  { opacity: 1; transform: scale(1.12); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.lock-pop { animation: lock-pop 0.45s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+@keyframes ring-in {
+  from { opacity: 0; transform: scale(0.55); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.ring-in { animation: ring-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .radar-ping, .contact-blink, .crt-flicker, .ring-in { animation: none; }
+}
+
+/* ---- Pomelo atmosphere + motion ---- */
+
+.brand-gradient {
+  background-image: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+}
+.brand-text {
+  background-image: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.glow-ring {
+  box-shadow:
+    0 0 0 1px var(--border-glow),
+    0 0 28px -6px var(--brand-from);
+}
+.glass-panel {
+  background: color-mix(in oklch, var(--card) 70%, transparent);
+  border: 1px solid color-mix(in oklch, white 8%, transparent);
+  backdrop-filter: blur(14px);
+  border-radius: var(--radius);
+}
+.ambient-bed {
+  position: relative;
+  isolation: isolate;
+}
+.ambient-bed::before {
+  content: "";
+  position: absolute;
+  /* No upward bleed — the top glow used to spill 10% above the section and
+     land awkwardly behind the previous section (e.g. under the hero
+     terminal). Keep the side bleed for edge blend. */
+  inset: 0 -10% 0 -10%;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 60% 50% at 50% 0%,
+      color-mix(in oklch, var(--brand-from) 22%, transparent), transparent 70%),
+    radial-gradient(ellipse 50% 60% at 50% 100%,
+      color-mix(in oklch, var(--brand-to) 14%, transparent), transparent 75%);
+  pointer-events: none;
+}
+.hex-grid {
+  background-image:
+    linear-gradient(transparent 0, transparent 31px, color-mix(in oklch, white 4%, transparent) 32px),
+    linear-gradient(90deg, transparent 0, transparent 31px, color-mix(in oklch, white 4%, transparent) 32px);
+  background-size: 32px 32px;
+}
+
+@keyframes particleDrift {
+  from { transform: translate3d(0,0,0); }
+  to   { transform: translate3d(0,-22px,0); }
+}
+.particles::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    radial-gradient(1.5px 1.5px at 20% 30%, color-mix(in oklch, white 35%, transparent), transparent),
+    radial-gradient(1.5px 1.5px at 70% 60%, color-mix(in oklch, white 25%, transparent), transparent),
+    radial-gradient(2px 2px at 45% 80%, color-mix(in oklch, var(--brand-from) 40%, transparent), transparent);
+  background-size: 240px 240px;
+  animation: particleDrift 18s linear infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes dashFlow { to { stroke-dashoffset: -24; } }
+.dash-flow { stroke-dasharray: 4 6; animation: dashFlow 1.4s linear infinite; }
+
+@keyframes nodeBreathe {
+  0%,100% { opacity: 0.55; transform: scale(1); }
+  50%     { opacity: 1;    transform: scale(1.04); }
+}
+.node-breathe { animation: nodeBreathe 3.2s ease-in-out infinite; }
+
+@keyframes drawStroke { to { stroke-dashoffset: 0; } }
+.draw-stroke { stroke-dasharray: 1000; stroke-dashoffset: 1000; animation: drawStroke 1.4s ease-out forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .particles::after,
+  .dash-flow,
+  .node-breathe,
+  .draw-stroke { animation: none !important; }
+  .draw-stroke { stroke-dashoffset: 0; }
+}
