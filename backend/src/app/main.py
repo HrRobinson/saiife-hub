@@ -21,6 +21,12 @@ from .mailer import configure_default_mailer
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     configure_default_mailer()
+    if settings.ENV == "dev":
+        # Dev only: keep verification links in memory so the e2e can read them.
+        from .api.v1.dev.router import RecordingMailer
+        from .mailer import set_mailer
+
+        set_mailer(RecordingMailer())
     configure_default_cloud()
     configure_default_stripe_gateway()
     yield
@@ -89,6 +95,7 @@ async def _validation_exc(_: Request, exc: RequestValidationError) -> JSONRespon
 
 
 from app.api.v1.auth.router import router as auth_router  # noqa: E402
+from app.api.v1.dev.router import router as dev_router  # noqa: E402
 from app.api.v1.health.router import router as health_router  # noqa: E402
 from app.billing.routes import router as billing_router  # noqa: E402
 from app.installs.routes import router as installs_router  # noqa: E402
@@ -96,6 +103,7 @@ from app.tenants.routes import router as tenants_router  # noqa: E402
 
 app.include_router(health_router)
 app.include_router(auth_router)
+app.include_router(dev_router)
 app.include_router(billing_router)
 app.include_router(tenants_router)
 app.include_router(installs_router)
