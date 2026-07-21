@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,14 @@ from ....auth.oauth_google import (
     exchange_code,
     fetch_userinfo,
 )
+from ....auth.passkeys import (
+    challenge_expiry,
+    detect_clone,
+    make_authentication_options,
+    make_registration_options,
+    verify_authentication,
+    verify_registration,
+)
 from ....auth.schemas import (
     LoginRequest,
     ResendVerificationRequest,
@@ -37,7 +46,14 @@ from ....core.config import settings
 from ....core.rate_limit import limiter
 from ....db.session import get_db
 from ....mailer import get_mailer
-from ....models.user import EmailVerification, OAuthAccount, Session, User
+from ....models.user import (
+    EmailVerification,
+    OAuthAccount,
+    Passkey,
+    PasskeyChallenge,
+    Session,
+    User,
+)
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -429,3 +445,182 @@ async def google_callback(
     await audit.log_event(db, user_id=user.id, event_type="login_google", request=request)
     await db.commit()
     return response
+
+
+@router.post("/passkey/register/start")
+async def passkey_register_start(
+    user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    existing = (
+        await db.execute(select(Passkey.credential_id).where(Passkey.user_id == user.id))
+    ).scalars().all()
+    challenge_bytes, options_json = make_registration_options(
+        user_id=user.id, user_email=user.email, excluded_credential_ids=list(existing)
+    )
+    ch = PasskeyChallenge(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        challenge=challenge_bytes,
+        type="registration",
+        expires_at=challenge_expiry(),
+    )
+    db.add(ch)
+    await db.commit()
+    return {"challenge_id": str(ch.id), "options": json.loads(options_json)}
+
+
+@router.post("/passkey/register/finish", status_code=201)
+async def passkey_register_finish(
+    request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    body = await request.json()
+    ch = await db.scalar(
+        select(PasskeyChallenge).where(
+            PasskeyChallenge.id == uuid.UUID(body["challenge_id"]),
+            PasskeyChallenge.user_id == user.id,
+            PasskeyChallenge.type == "registration",
+        )
+    )
+    if ch is None or ch.expires_at < datetime.now(timezone.utc):
+        raise _err("passkey_challenge_invalid", "Passkey challenge expired — try again.", 400)
+    verification = verify_registration(
+        challenge=ch.challenge, response_json=json.dumps(body["response"])
+    )
+    pk = Passkey(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        credential_id=verification["credential_id"],
+        public_key=verification["credential_public_key"],
+        sign_count=verification["sign_count"],
+        transports=body.get("transports"),
+        name=body.get("name") or "Unnamed passkey",
+    )
+    db.add(pk)
+    await db.delete(ch)
+    await audit.log_event(
+        db, user_id=user.id, event_type="passkey_added", request=request,
+        metadata={"name": pk.name},
+    )
+    await db.commit()
+    return {"id": str(pk.id), "name": pk.name, "created_at": pk.created_at.isoformat()}
+
+
+@router.post("/passkey/login/start")
+async def passkey_login_start(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    # Discoverable-credentials flow — allow any registered credential.
+    challenge_bytes, options_json = make_authentication_options(allow_credential_ids=[])
+    ch = PasskeyChallenge(
+        id=uuid.uuid4(),
+        user_id=None,
+        challenge=challenge_bytes,
+        type="authentication",
+        expires_at=challenge_expiry(),
+    )
+    db.add(ch)
+    await db.commit()
+    return {"challenge_id": str(ch.id), "options": json.loads(options_json)}
+
+
+@router.post("/passkey/login/finish")
+async def passkey_login_finish(
+    request: Request, response: Response, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    body = await request.json()
+    ch = await db.scalar(
+        select(PasskeyChallenge).where(
+            PasskeyChallenge.id == uuid.UUID(body["challenge_id"]),
+            PasskeyChallenge.type == "authentication",
+        )
+    )
+    if ch is None or ch.expires_at < datetime.now(timezone.utc):
+        raise _err("passkey_challenge_invalid", "Passkey challenge expired — try again.", 400)
+    raw_id = base64.urlsafe_b64decode(body["response"]["rawId"] + "==")
+    pk = await db.scalar(select(Passkey).where(Passkey.credential_id == raw_id))
+    if pk is None:
+        raise _err("passkey_unknown", "This passkey is not registered.", 401)
+    verification = verify_authentication(
+        challenge=ch.challenge,
+        response_json=json.dumps(body["response"]),
+        public_key=pk.public_key,
+        stored_sign_count=pk.sign_count,
+    )
+    if detect_clone(stored=pk.sign_count, new=verification["new_sign_count"]):
+        await db.delete(pk)
+        await audit.log_event(
+            db, user_id=pk.user_id, event_type="passkey_clone_detected", request=request,
+            metadata={"name": pk.name},
+        )
+        await db.commit()
+        raise _err(
+            "passkey_clone_detected",
+            "This passkey was cloned and has been revoked. Register a new one.",
+            401,
+        )
+    pk.sign_count = verification["new_sign_count"]
+    pk.last_used_at = datetime.now(timezone.utc)
+    await db.delete(ch)
+    user = await db.scalar(select(User).where(User.id == pk.user_id))
+    assert user is not None  # pk.user_id FK guarantees the row exists
+    await _start_session(db, user, request, response)
+    await audit.log_event(db, user_id=user.id, event_type="login_passkey", request=request)
+    await db.commit()
+    return _user_out(user).model_dump(mode="json")
+
+
+@router.get("/passkeys")
+async def list_passkeys(
+    user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+) -> list[dict[str, Any]]:
+    rows = (
+        await db.execute(
+            select(Passkey).where(Passkey.user_id == user.id).order_by(Passkey.created_at)
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": str(p.id),
+            "name": p.name,
+            "created_at": p.created_at.isoformat(),
+            "last_used_at": p.last_used_at.isoformat() if p.last_used_at else None,
+        }
+        for p in rows
+    ]
+
+
+@router.patch("/passkeys/{passkey_id}")
+async def rename_passkey(
+    passkey_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    body = await request.json()
+    pk = await db.scalar(
+        select(Passkey).where(Passkey.id == passkey_id, Passkey.user_id == user.id)
+    )
+    if pk is None:
+        raise _err("passkey_not_found", "Passkey not found.", 404)
+    pk.name = body.get("name") or pk.name
+    await db.commit()
+    return {"id": str(pk.id), "name": pk.name}
+
+
+@router.delete("/passkeys/{passkey_id}", status_code=204)
+async def delete_passkey(
+    passkey_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    pk = await db.scalar(
+        select(Passkey).where(Passkey.id == passkey_id, Passkey.user_id == user.id)
+    )
+    if pk is None:
+        raise _err("passkey_not_found", "Passkey not found.", 404)
+    # Log BEFORE delete so pk.name is still readable.
+    await audit.log_event(
+        db, user_id=user.id, event_type="passkey_removed", request=request,
+        metadata={"name": pk.name},
+    )
+    await db.delete(pk)
+    await db.commit()
