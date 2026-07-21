@@ -91,7 +91,9 @@ async def _validation_exc(_: Request, exc: RequestValidationError) -> JSONRespon
 from app.api.v1.auth.router import router as auth_router  # noqa: E402
 from app.api.v1.health.router import router as health_router  # noqa: E402
 from app.billing.routes import router as billing_router  # noqa: E402
+from app.tenants.routes import router as tenants_router  # noqa: E402
 
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(billing_router)
+app.include_router(tenants_router)
