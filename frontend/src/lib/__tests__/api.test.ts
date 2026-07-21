@@ -75,6 +75,27 @@ describe("api", () => {
     expect(fetchMock.mock.calls[1][0]).toBe(`${API_URL}/api/v1/auth/refresh`);
   });
 
+  it("uses the rotated CSRF cookie (not the stale pre-refresh header) on replay", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () =>
+        jsonResponse({ error: { code: "token_expired", message: "expired" } }, 401),
+      )
+      .mockImplementationOnce(async () => {
+        // /auth/refresh rotates the csrf_token cookie mid-flight.
+        document.cookie = "csrf_token=tok-456";
+        return jsonResponse({ ok: true });
+      })
+      .mockImplementationOnce(async () => jsonResponse({ id: "u1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api<{ id: string }>("/api/v1/auth/me", { method: "POST" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const replayInit = fetchMock.mock.calls[2][1];
+    expect(replayInit.headers["X-CSRF-Token"]).toBe("tok-456");
+  });
+
   it("does not retry a 401 that is not a session-expiry code", async () => {
     const fetchMock = vi
       .fn()

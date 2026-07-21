@@ -63,7 +63,17 @@ export async function api<T = unknown>(
     // (no_session) — the 30-day refresh cookie can still mint a new one.
     const code = body?.error?.code;
     if ((code === "token_expired" || code === "no_session") && (await refreshOnce())) {
-      res = await fetch(`${API_URL}${path}`, opts);
+      // /auth/refresh rotates the csrf_token cookie, so the header captured in `opts`
+      // before the refresh is now stale. Re-read the cookie and rebuild the headers
+      // immediately before replaying, or CSRFMiddleware rejects the replay with 403.
+      const replayOpts: RequestInit = {
+        ...opts,
+        headers: {
+          ...(opts.headers as Record<string, string> | undefined),
+          ...csrfHeader(),
+        },
+      };
+      res = await fetch(`${API_URL}${path}`, replayOpts);
     }
   }
 
