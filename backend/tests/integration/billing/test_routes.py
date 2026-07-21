@@ -65,7 +65,7 @@ async def test_checkout_session_reuses_an_existing_customer(
         cookies=signed_in_user["cookies"],
         headers={"X-CSRF-Token": signed_in_user["csrf"]},
     )
-    await client.post(
+    r2 = await client.post(
         "/api/v1/billing/checkout-session",
         cookies=signed_in_user["cookies"],
         headers={"X-CSRF-Token": signed_in_user["csrf"]},
@@ -78,6 +78,13 @@ async def test_checkout_session_reuses_an_existing_customer(
         ).scalars().all()
     assert len(rows) == 1
     assert rows[0].stripe_customer_id == "cus_mock_1"
+
+    # Gateway-level reuse: the second call must actually ask Stripe to reuse
+    # the existing customer, not merely leave the DB row untouched.
+    assert len(mock_gateway.checkout_calls) == 2
+    assert mock_gateway.checkout_calls[0]["existing_customer_id"] is None
+    assert mock_gateway.checkout_calls[1]["existing_customer_id"] == "cus_mock_1"
+    assert r2.json()["url"] == "https://checkout.stripe.invalid/mock/cs_mock_2"
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,7 @@ class StripeGateway(Protocol):
         price_id: str,
         success_url: str,
         cancel_url: str,
+        existing_customer_id: str | None = None,
     ) -> CheckoutSession: ...
 
     async def create_portal_session(
@@ -48,7 +49,14 @@ class MockStripeGateway:
         self._counter = 0
 
     async def create_checkout_session(
-        self, *, user_id: str, email: str, price_id: str, success_url: str, cancel_url: str
+        self,
+        *,
+        user_id: str,
+        email: str,
+        price_id: str,
+        success_url: str,
+        cancel_url: str,
+        existing_customer_id: str | None = None,
     ) -> CheckoutSession:
         self._counter += 1
         n = self._counter
@@ -59,12 +67,13 @@ class MockStripeGateway:
                 "price_id": price_id,
                 "success_url": success_url,
                 "cancel_url": cancel_url,
+                "existing_customer_id": existing_customer_id,
             }
         )
         return CheckoutSession(
             id=f"cs_mock_{n}",
             url=f"https://checkout.stripe.invalid/mock/cs_mock_{n}",
-            customer_id=f"cus_mock_{n}",
+            customer_id=existing_customer_id or f"cus_mock_{n}",
         )
 
     async def create_portal_session(
@@ -86,22 +95,45 @@ class LiveStripeGateway:
         self._client = stripe.StripeClient(secret_key)
 
     async def create_checkout_session(
-        self, *, user_id: str, email: str, price_id: str, success_url: str, cancel_url: str
+        self,
+        *,
+        user_id: str,
+        email: str,
+        price_id: str,
+        success_url: str,
+        cancel_url: str,
+        existing_customer_id: str | None = None,
     ) -> CheckoutSession:
-        session = self._client.checkout.sessions.create(
-            params={
-                "mode": "subscription",
-                "line_items": [{"price": price_id, "quantity": 1}],
-                "customer_email": email,
-                "client_reference_id": user_id,
-                "success_url": success_url,
-                "cancel_url": cancel_url,
-                # Echoed back on the webhook so the handler can find the user
-                # without trusting anything else in the payload.
-                "metadata": {"hub_user_id": user_id},
-                "subscription_data": {"metadata": {"hub_user_id": user_id}},
-            }
-        )
+        if existing_customer_id:
+            session = self._client.checkout.sessions.create(
+                params={
+                    "mode": "subscription",
+                    "line_items": [{"price": price_id, "quantity": 1}],
+                    "customer": existing_customer_id,
+                    "client_reference_id": user_id,
+                    "success_url": success_url,
+                    "cancel_url": cancel_url,
+                    # Echoed back on the webhook so the handler can find the user
+                    # without trusting anything else in the payload.
+                    "metadata": {"hub_user_id": user_id},
+                    "subscription_data": {"metadata": {"hub_user_id": user_id}},
+                }
+            )
+        else:
+            session = self._client.checkout.sessions.create(
+                params={
+                    "mode": "subscription",
+                    "line_items": [{"price": price_id, "quantity": 1}],
+                    "customer_email": email,
+                    "client_reference_id": user_id,
+                    "success_url": success_url,
+                    "cancel_url": cancel_url,
+                    # Echoed back on the webhook so the handler can find the user
+                    # without trusting anything else in the payload.
+                    "metadata": {"hub_user_id": user_id},
+                    "subscription_data": {"metadata": {"hub_user_id": user_id}},
+                }
+            )
         customer = session.customer
         customer_id = customer if isinstance(customer, str) else getattr(customer, "id", "")
         return CheckoutSession(id=session.id, url=session.url or "", customer_id=customer_id or "")

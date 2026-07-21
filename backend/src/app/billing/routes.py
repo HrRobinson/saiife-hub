@@ -66,6 +66,7 @@ async def create_checkout_session(
         price_id=settings.STRIPE_PRICE_ID,
         success_url=f"{settings.APP_URL}/dashboard?subscribed=1",
         cancel_url=f"{settings.APP_URL}/billing?cancelled=1",
+        existing_customer_id=subscription.stripe_customer_id if subscription is not None else None,
     )
     if subscription is None:
         db.add(
