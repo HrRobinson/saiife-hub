@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.deps import verified_user
+from ..cloud.deps import get_cloud
 from ..core.config import settings
 from ..core.rate_limit import limiter
 from ..db.session import get_db
-from ..models.billing import Subscription
+from ..models.billing import StripeEvent, Subscription
 from ..models.tenant import Tenant
 from ..models.user import User
 from .gateway import get_stripe_gateway
+from .service import apply_stripe_event
+from .signature import SignatureError, verify_stripe_signature
+
+log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 
@@ -97,3 +105,53 @@ async def create_portal_session(
         return_url=f"{settings.APP_URL}/billing",
     )
     return {"url": portal.url}
+
+
+@router.post("/webhook")
+async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Signature-verified, replay-safe entry point for Stripe.
+
+    Order is load-bearing:
+      1. verify the signature over the RAW bytes — no state change before this;
+      2. claim the event id (PK insert) — a replay collides and short-circuits;
+      3. apply the event.
+    """
+    raw = await request.body()
+    try:
+        verify_stripe_signature(
+            raw,
+            request.headers.get("stripe-signature"),
+            settings.STRIPE_WEBHOOK_SECRET,
+            tolerance_seconds=settings.STRIPE_SIGNATURE_TOLERANCE_SECONDS,
+        )
+    except SignatureError as exc:
+        # Never echo the reason to the caller — log it, return one flat code.
+        log.warning("stripe_webhook_rejected", reason=exc.reason)
+        raise _err("invalid_signature", "Signature verification failed.", 400) from None
+
+    try:
+        event = json.loads(raw)
+    except json.JSONDecodeError:
+        raise _err("invalid_payload", "Webhook body was not JSON.", 400) from None
+    if not isinstance(event, dict) or not isinstance(event.get("id"), str):
+        raise _err("invalid_payload", "Webhook body had no event id.", 400)
+
+    event_id = event["id"]
+    event_type = str(event.get("type", ""))
+
+    # Claim the event id first. A retried delivery collides on the primary key,
+    # which is exactly how we detect a replay.
+    db.add(StripeEvent(event_id=event_id, event_type=event_type))
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        log.info("stripe_webhook_replay", event_id=event_id, event_type=event_type)
+        return {"received": True, "duplicate": True, "action": "ignored"}
+
+    action = await apply_stripe_event(
+        db, get_cloud(), event=event, pepper=settings.ACCOUNT_TOKEN_PEPPER
+    )
+    await db.commit()
+    log.info("stripe_webhook_applied", event_id=event_id, event_type=event_type, action=action)
+    return {"received": True, "duplicate": False, "action": action}
