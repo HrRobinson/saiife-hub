@@ -113,7 +113,12 @@ def upgrade() -> None:
     )
     op.create_table(
         "auth_events",
-        sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
+        sa.Column(
+            "id",
+            sa.BigInteger().with_variant(sa.Integer(), "sqlite"),
+            primary_key=True,
+            autoincrement=True,
+        ),
         sa.Column("user_id", sa.Uuid(as_uuid=True), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("event_type", sa.String(length=60), nullable=False),
         sa.Column("ip", sa.String(length=45), nullable=True),
