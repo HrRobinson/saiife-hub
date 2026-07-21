@@ -12,11 +12,13 @@ from .auth.csrf import CSRFMiddleware
 from .core.config import settings
 from .core.logging import configure_logging
 from .core.rate_limit import limiter
+from .mailer import configure_default_mailer
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+    configure_default_mailer()
     yield
 
 
@@ -82,6 +84,8 @@ async def _validation_exc(_: Request, exc: RequestValidationError) -> JSONRespon
     )
 
 
+from app.api.v1.auth.router import router as auth_router  # noqa: E402
 from app.api.v1.health.router import router as health_router  # noqa: E402
 
 app.include_router(health_router)
+app.include_router(auth_router)

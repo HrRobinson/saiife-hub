@@ -40,3 +40,74 @@ async def db_ready() -> object:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield
+
+
+import uuid as _uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter() -> None:
+    from app.core.rate_limit import limiter
+
+    limiter.reset()
+
+
+@dataclass
+class FakeMailer:
+    verifications: list[tuple[str, str]] = field(default_factory=list)
+
+    async def send_verification(self, email: str, link: str) -> None:
+        self.verifications.append((email, link))
+
+
+@pytest.fixture
+def fake_mailer() -> object:
+    from app import mailer as mailer_mod
+
+    fm = FakeMailer()
+    mailer_mod.set_mailer(fm)
+    yield fm
+    mailer_mod.set_mailer(mailer_mod.ConsoleMailer())
+
+
+@pytest_asyncio.fixture
+async def client() -> object:
+    from app.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="https://api.saiife.localhost"
+    ) as c:
+        yield c
+
+
+@pytest_asyncio.fixture
+async def signed_in_user() -> dict[str, object]:
+    """A verified user plus the cookies and CSRF token for signed-in requests."""
+    from app.auth import jwt as ajwt
+    from app.auth.cookies import ACCESS_COOKIE, CSRF_COOKIE, REFRESH_COOKIE
+    from app.db.session import SessionLocal
+    from app.models.user import User
+
+    async with SessionLocal() as db:
+        user = User(
+            id=_uuid.uuid4(),
+            email=f"u-{_uuid.uuid4().hex[:8]}@example.com",
+            email_verified_at=datetime.now(UTC),
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+
+    access = ajwt.issue_access(user.id, user.email)
+    refresh, _ = ajwt.issue_refresh(user.id, _uuid.uuid4())
+    csrf = "csrf-test-token"
+    return {
+        "user": user,
+        "cookies": {ACCESS_COOKIE: access, REFRESH_COOKIE: refresh, CSRF_COOKIE: csrf},
+        "csrf": csrf,
+    }
