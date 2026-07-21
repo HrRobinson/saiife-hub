@@ -1,5 +1,5 @@
 """Importing this package registers every table on `Base.metadata`."""
 
-from . import user  # noqa: F401
+from . import billing, install, tenant, user  # noqa: F401
 
-__all__ = ["user"]
+__all__ = ["billing", "install", "tenant", "user"]

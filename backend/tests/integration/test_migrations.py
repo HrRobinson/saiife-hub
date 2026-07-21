@@ -17,6 +17,10 @@ EXPECTED_TABLES = {
     "passkeys",
     "passkey_challenges",
     "auth_events",
+    "subscriptions",
+    "stripe_events",
+    "tenants",
+    "installs",
 }
 
 
