@@ -506,7 +506,10 @@ async def passkey_register_finish(
 
 
 @router.post("/passkey/login/start")
-async def passkey_login_start(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+@limiter.limit("10/minute")
+async def passkey_login_start(
+    request: Request, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
     # Discoverable-credentials flow — allow any registered credential.
     challenge_bytes, options_json = make_authentication_options(allow_credential_ids=[])
     ch = PasskeyChallenge(
@@ -522,6 +525,7 @@ async def passkey_login_start(db: AsyncSession = Depends(get_db)) -> dict[str, A
 
 
 @router.post("/passkey/login/finish")
+@limiter.limit("10/minute")
 async def passkey_login_finish(
     request: Request, response: Response, db: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
