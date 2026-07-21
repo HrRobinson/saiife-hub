@@ -76,3 +76,87 @@ def parse_account_token(token: object) -> ParsedAccountToken | None:
     if not _SEGMENT_RE.match(lookup) or not _SEGMENT_RE.match(secret):
         return None
     return ParsedAccountToken(tenant_lookup_id=lookup, secret=secret)
+
+
+# --- hashing (pinned by saiife-cloud/packages/control-api/src/auth.ts) -------
+
+import binascii  # noqa: E402
+import hashlib  # noqa: E402
+import hmac  # noqa: E402
+
+SCRYPT_N = 16384
+SCRYPT_R = 8
+SCRYPT_P = 1
+KEY_LEN = 32
+SALT_LEN = 16
+
+# 128 * N * r = 16 MiB of scratch; give OpenSSL headroom above its 32 MiB default.
+_MAXMEM = 64 * 1024 * 1024
+
+# A fixed dummy salt so the unknown-tenant path still performs scrypt work and
+# cannot be used as a timing oracle. Byte-identical to cloud's `DUMMY_SALT`.
+DUMMY_SALT = bytes([7]) * SALT_LEN
+
+
+def _scrypt(secret: str, pepper: str, salt: bytes) -> bytes:
+    # The pepper is mixed into the PASSWORD side; the salt is per-tenant and is
+    # stored alongside the hash. Matches Node: scryptSync(`${pepper}:${secret}`, ...).
+    return hashlib.scrypt(
+        f"{pepper}:{secret}".encode("utf-8"),
+        salt=salt,
+        n=SCRYPT_N,
+        r=SCRYPT_R,
+        p=SCRYPT_P,
+        dklen=KEY_LEN,
+        maxmem=_MAXMEM,
+    )
+
+
+def hash_account_secret(secret: str, pepper: str, salt: bytes | None = None) -> str:
+    """Hash a token's secret half FOR STORAGE.
+
+    Returns the self-describing `scrypt$N$r$p$<saltB64>$<hashB64>` — never the
+    plaintext. Used at issuance; the plaintext is shown once and discarded.
+    """
+    salt = salt if salt is not None else secrets.token_bytes(SALT_LEN)
+    digest = _scrypt(secret, pepper, salt)
+    return "$".join(
+        [
+            "scrypt",
+            str(SCRYPT_N),
+            str(SCRYPT_R),
+            str(SCRYPT_P),
+            base64.b64encode(salt).decode("ascii"),
+            base64.b64encode(digest).decode("ascii"),
+        ]
+    )
+
+
+def verify_account_secret(secret: str, pepper: str, stored: str) -> bool:
+    """Constant-time verify of a presented secret against a stored hash string."""
+    parts = stored.split("$")
+    if len(parts) != 6 or parts[0] != "scrypt":
+        return False
+    try:
+        salt = base64.b64decode(parts[4], validate=True)
+        expected = base64.b64decode(parts[5], validate=True)
+        n, r, p = int(parts[1]), int(parts[2]), int(parts[3])
+    except (ValueError, binascii.Error):
+        return False
+    if len(expected) != KEY_LEN:
+        return False
+    try:
+        actual = hashlib.scrypt(
+            f"{pepper}:{secret}".encode("utf-8"),
+            salt=salt, n=n, r=r, p=p, dklen=KEY_LEN, maxmem=_MAXMEM,
+        )
+    except ValueError:
+        return False
+    return hmac.compare_digest(actual, expected)
+
+
+def equalize_timing(secret: str, pepper: str) -> None:
+    """Burn one scrypt against the dummy salt so an unknown lookup id costs the
+    same as a real verification. Never returns or logs anything."""
+    _scrypt(secret, pepper, DUMMY_SALT)
+    return None
