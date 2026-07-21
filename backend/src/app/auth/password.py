@@ -33,3 +33,15 @@ def needs_rehash(hashed: str) -> bool:
     """True if the stored hash uses outdated params and should be rehashed
     on the next successful login."""
     return _hasher.check_needs_rehash(hashed)
+
+
+# Precomputed argon2id hash (same parameters as _hasher) of a fixed, unused
+# plaintext. Callers with no real password_hash to check against (unknown
+# email, no local password) should still call verify_password(DUMMY_PASSWORD_HASH, ...)
+# so the argon2id cost is paid on every code path — this closes the timing
+# side-channel that would otherwise let an attacker distinguish "no such
+# account" from "wrong password" by request latency.
+DUMMY_PASSWORD_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=1$N3mPSnmoxTDB2i5ne9rmow$"
+    "+oBOUov9Bgk/Yk7yr48+W8jk7eAfY0PjKRJ7FiHrGU4"
+)

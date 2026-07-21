@@ -170,11 +170,18 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ) -> UserOut:
     user = await db.scalar(select(User).where(User.email == body.email.lower()))
-    if (
-        user is None
-        or user.password_hash is None
-        or not password.verify_password(user.password_hash, body.password)
-    ):
+    # Always pay the argon2id cost, even when there's no real hash to check
+    # against (unknown email, no local password) — otherwise the wrong-branch
+    # short-circuit makes unknown-account requests return ~26x faster than
+    # known-account ones, a trivial timing oracle for enumerating registered
+    # emails despite the response bodies being byte-identical.
+    stored_hash = (
+        user.password_hash
+        if user is not None and user.password_hash is not None
+        else password.DUMMY_PASSWORD_HASH
+    )
+    password_ok = password.verify_password(stored_hash, body.password)
+    if user is None or user.password_hash is None or not password_ok:
         raise _err("invalid_credentials", "Email or password is incorrect.", 401)
     if user.email_verified_at is None:
         raise _err("email_unverified", "Verify your email before signing in.", 403)
