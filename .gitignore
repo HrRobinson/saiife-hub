@@ -19,3 +19,6 @@ infra/.terraform/
 infra/*.tfstate
 infra/*.tfstate.backup
 .superpowers/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
