@@ -38,15 +38,41 @@ test("signup -> subscribe (stubbed Stripe) -> token issued -> visible in dashboa
   // 3. Subscribe. The backend's MockStripeGateway returns a non-navigable
   //    checkout URL, so block the navigation and drive the webhook ourselves —
   //    exactly what Stripe would send on a completed checkout.
+  //
+  //    The checkout-session response only exposes `url` (see
+  //    backend/src/app/billing/routes.py POST /checkout-session and
+  //    frontend/src/lib/api/billing.ts createCheckoutSession) — it does not
+  //    return a customer id. MockStripeGateway.create_checkout_session
+  //    (backend/src/app/billing/gateway.py) mints both ids from the same
+  //    per-process counter value `n` in one call — `cs_mock_{n}` for the
+  //    session and `cus_mock_{n}` for a brand-new customer — so we recover
+  //    the real customer id assigned to *this* run by reading `n` back out
+  //    of the mock checkout URL, instead of guessing a fixed id that only
+  //    happens to be right on the first checkout since the backend started.
   await page.route("**checkout.stripe.invalid/**", (route) => route.abort());
+  const checkoutSessionResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/billing/checkout-session") &&
+      response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Subscribe" }).click();
+  const { url: checkoutUrl } = (await (await checkoutSessionResponse).json()) as {
+    url: string;
+  };
+  const sessionIdMatch = checkoutUrl.match(/cs_mock_(\d+)/);
+  if (!sessionIdMatch) {
+    throw new Error(
+      `Expected a mock checkout session id (cs_mock_<n>) in the checkout URL, got: ${checkoutUrl}`,
+    );
+  }
+  const customerId = `cus_mock_${sessionIdMatch[1]}`;
 
   const body = JSON.stringify({
     id: `evt_e2e_${Date.now()}`,
     type: "checkout.session.completed",
     data: {
       object: {
-        customer: "cus_mock_1",
+        customer: customerId,
         subscription: `sub_e2e_${Date.now()}`,
         metadata: {},
       },
