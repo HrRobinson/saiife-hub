@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: saiife
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: saiife
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saiife"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    environment:
+      DATABASE_URL: postgresql+asyncpg://saiife:dev@postgres:5432/saiife
+      ENV: dev
+      LOG_LEVEL: debug
+      APP_VERSION: dev
+      APP_URL: http://localhost:3001
+      MARKETING_URL: http://localhost:3000
+      APP_JWT_SECRET: dev-only-not-secret
+      COOKIE_DOMAIN: ""
+      COOKIE_SECURE: "false"
+      PASSKEY_RP_ID: localhost
+      PASSKEY_ORIGIN: http://localhost:3001
+      ACCOUNT_TOKEN_PEPPER: dev-only-not-secret
+      CLOUD_ADMIN_API_URL: ""
+      STRIPE_SECRET_KEY: ""
+      STRIPE_WEBHOOK_SECRET: whsec_test_secret
+      STRIPE_PRICE_ID: price_dev
+    ports: ["8000:8000"]
+    volumes:
+      - ./backend:/app
+      - backend_uv_cache:/root/.cache/uv
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports: ["3001:3001"]
+    depends_on: [backend]
+
+volumes:
+  pgdata: {}
+  backend_uv_cache: {}
