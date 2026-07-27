@@ -24,8 +24,19 @@ export function PasskeyList() {
   }, []);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await listPasskeys();
+        if (!cancelled) setPasskeys(next);
+      } catch {
+        if (!cancelled) setError("Could not load your passkeys.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function add() {
     setError(null);

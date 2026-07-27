@@ -9,14 +9,15 @@ function VerifyEmailInner() {
   const params = useSearchParams();
   const router = useRouter();
   const { refresh } = useAuth();
-  const [error, setError] = useState<string | null>(null);
+  // Derived from the URL, which is known at first render — setting this from
+  // inside the effect cost an extra render and tripped set-state-in-effect.
+  const token = params.get("token");
+  const [error, setError] = useState<string | null>(
+    token ? null : "This verification link is missing its token.",
+  );
 
   useEffect(() => {
-    const token = params.get("token");
-    if (!token) {
-      setError("This verification link is missing its token.");
-      return;
-    }
+    if (!token) return;
     api("/api/v1/auth/verify-email", { method: "POST", json: { token } })
       .then(async () => {
         await refresh();

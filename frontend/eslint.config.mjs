@@ -21,20 +21,7 @@ const config = [
     ]
   },
   ...coreWebVitals,
-  ...typescript,
-  {
-    rules: {
-      // Downgraded to a warning on purpose, not to silence it. Linting has
-      // never run in this package, so this rule surfaced six pre-existing
-      // violations at once — all the same "fetch on mount, then setState"
-      // idiom in billing, dashboard, verify-email, InstallsCard, PasskeyList
-      // and auth-context. Fixing them means reworking how those components
-      // load data, which is a deliberate change with behavioural risk, not
-      // lint cleanup. Keep them visible until that work is scheduled, then
-      // restore this to "error".
-      'react-hooks/set-state-in-effect': 'warn'
-    }
-  }
+  ...typescript
 ]
 
 export default config
