@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { AccountShell } from "@/components/AccountShell";
 import { SubscriptionCard } from "@/components/SubscriptionCard";
@@ -10,13 +10,16 @@ export default function BillingPage() {
   const { user } = useAuth();
   const [status, setStatus] = useState<SubscriptionStatus | null>(null);
 
-  const reload = useCallback(async () => {
-    setStatus(await getSubscription());
-  }, []);
-
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    let cancelled = false;
+    void (async () => {
+      const next = await getSubscription();
+      if (!cancelled) setStatus(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <AccountShell email={user?.email ?? ""}>

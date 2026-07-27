@@ -21,8 +21,15 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    let cancelled = false;
+    void (async () => {
+      const next = await getSubscription();
+      if (!cancelled) setStatus(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <AccountShell email={user?.email ?? ""}>

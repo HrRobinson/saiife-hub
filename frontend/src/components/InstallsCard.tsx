@@ -14,8 +14,15 @@ export function InstallsCard() {
   }, []);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    let cancelled = false;
+    void (async () => {
+      const next = await listInstalls();
+      if (!cancelled) setInstalls(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function add() {
     if (!name.trim()) return;
